@@ -1,7 +1,5 @@
-# goit-pythonweb-hw-01
+# Applied Computer Science Project
 
-Homework 1. Fullstack Web Development with Python at GoIT Neoversity
-
-
+Applied Computer Science Project at GoIT Neoversity
 
 ---
