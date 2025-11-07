@@ -170,3 +170,8 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 .idea
+
+# Ignore ML model artifacts
+*.pkl
+*.joblib
+/models/
