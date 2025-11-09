@@ -1,19 +1,19 @@
-import pandas as pd
-import joblib
 from typing import List, Literal
-from src.data_processing.java_metrics_extractor import extract_metrics_from_java
 from sklearn.preprocessing import StandardScaler
+import joblib
+import pandas as pd
+from sklearn.metrics import classification_report, hamming_loss, accuracy_score
 
 ModelName = Literal["random_forest", "xgboost"]
 
 MODEL_PATHS = {
     "random_forest": {
-        "model": "../models/random_forest_smell_model.pkl",
-        "scaler": "../models/standard_scaler.pkl"
+        "model": "../models/random_forest_multilabel.pkl",
+        "scaler": "../models/standard_scaler_multilabel.pkl"
     },
     "xgboost": {
-        "model": "../models/xgb_smell_model.pkl",
-        "scaler": "../models/standard_scaler_xgb.pkl"
+        "model": "../models/xgboost_multilabel.pkl",
+        "scaler": "../models/standard_scaler_multilabel.pkl"
     }
 }
 
@@ -26,59 +26,38 @@ CLASS_LABELS = {
 }
 
 
-def run_inference(model_name: ModelName, df_input: pd.DataFrame, limit_per_class: int = 100) -> pd.DataFrame:
-    if model_name not in MODEL_PATHS:
-        raise ValueError(f"Unsupported model: {model_name}")
+def run_inference_pipeline(df: pd.DataFrame, model_type: ModelName, save_path: str = None):
+    feature_cols = [
+        'NumberOfOperatorsWithoutAssignments', 'LOC', 'NumberOfUniqueIdentifiers',
+        'NumberOfIdentifies', 'NumberOfAssignments', 'CYCLO', 'NumberOfTokens'
+    ]
+    label_cols = ["Long Method", "God Class", "Feature Envy", "Data Class", "Clean"]
 
-    if "Cleaned_Code" not in df_input.columns or "Long method" not in df_input.columns:
-        raise ValueError("Input DataFrame must contain 'Cleaned_Code' and label columns.")
+    X_eval = df[feature_cols]
+    y_eval = df[label_cols]
 
-    df_input = df_input.copy()
-    df_input["clean"] = (
-        (df_input["Long method"] == 0) &
-        (df_input["God class"] == 0) &
-        (df_input["Feature envy"] == 0) &
-        (df_input["Data class"] == 0)
-    ).astype(int)
-
-    label_columns = ["Long method", "God class", "Feature envy", "Data class", "clean"]
-    selected_df = pd.DataFrame()
-
-    for label_idx, col in enumerate(label_columns, start=1):
-        temp_df = df_input[df_input[col] == 1]
-        if not temp_df.empty:
-            temp_df = temp_df.sample(n=min(limit_per_class, len(temp_df)), random_state=42).copy()
-            temp_df["true_label"] = label_idx
-            selected_df = pd.concat([selected_df, temp_df], ignore_index=True)
-
-    code_list = selected_df["Cleaned_Code"].tolist()
-    true_labels = selected_df["true_label"].tolist()
-
-    # Load model and scaler
-    model = joblib.load(MODEL_PATHS[model_name]["model"])
-    scaler: StandardScaler = joblib.load(MODEL_PATHS[model_name]["scaler"])
-
-    # Extract metrics from each code snippet individually
-    metrics_list = []
-    for code in code_list:
-        metrics_df = extract_metrics_from_java(code)
-        metrics_list.append(metrics_df)
-
-    df_metrics = pd.concat(metrics_list, ignore_index=True)
-
-    # Scale features
-    X_scaled = scaler.transform(df_metrics)
+    # Load the model
+    model = joblib.load(MODEL_PATHS[model_type]["model"])
+    scaler: StandardScaler = joblib.load(MODEL_PATHS[model_type]["scaler"])
 
     # Predict
-    y_pred = model.predict(X_scaled)
+    X_eval_scaled = scaler.transform(X_eval)
+    y_pred = model.predict(X_eval_scaled)
 
-    # If XGBoost — shift labels back from 0–3 → 1–4
-    if model_name == "xgboost":
-        y_pred = y_pred + 1
+    # Evaluation
+    print(f"\n=== {model_type.upper()} Inference Evaluation ===")
+    for idx, label in enumerate(label_cols):
+        print(f"\n--- Label: {label} ---")
+        print(classification_report(y_eval[label], y_pred[:, idx]))
 
-    return pd.DataFrame({
-        "Code": code_list,
-        "True_Label": true_labels,
-        "Predicted_Label": y_pred,
-        "Predicted_Smell": [CLASS_LABELS[label] for label in y_pred]
-    })
+    print(f"Hamming Loss: {hamming_loss(y_eval, y_pred):.4f}")
+    subset_acc = accuracy_score(y_eval, y_pred)
+    print(f"Subset Accuracy (Exact Match): {subset_acc:.4f}")
+
+    # Save to CSV if requested
+    if save_path:
+        pred_df = df.copy()
+        for i, label in enumerate(label_cols):
+            pred_df[f"Predicted_{label}"] = y_pred[:, i]
+        pred_df.to_csv(save_path, index=False)
+        print(f"✔️ Predictions saved to: {save_path}")
