@@ -1,125 +1,92 @@
-"""
-Script for fine-tuning a transformer model for code smell detection.
-
-This file provides a minimal example of how to load a pre-trained model,
-prepare a dataset, and run the training process. You can modify the
-architecture, metrics, task, or model as needed.
-
-Run this module as:
-
-    python -m src.training.train_codebert
-
-or from the command line at the repository root:
-
-    python src/training/train_codebert.py
-"""
-
-from __future__ import annotations
-
-from datasets import load_dataset, DatasetDict
-from transformers import (
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
-    DataCollatorWithPadding,
-    TrainingArguments,
-    Trainer,
-)
-from typing import Callable, Dict, Any
 import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments
+from sklearn.model_selection import train_test_split
+from datasets import Dataset
+from sklearn.metrics import f1_score, accuracy_score
+import numpy as np
+import os
 
+def compute_multilabel_metrics(pred):
+    logits, labels = pred
+    preds = (torch.sigmoid(torch.tensor(logits)) > 0.5).int().numpy()
+    labels = labels.astype(int)
+    return {
+        "macro_f1": f1_score(labels, preds, average="macro", zero_division=0),
+        "micro_f1": f1_score(labels, preds, average="micro", zero_division=0),
+        "subset_accuracy": accuracy_score(labels, preds)
+    }
 
-def load_data(name: str, subset: str | None = None) -> DatasetDict:
-    """Loads a dataset for training.
+def train_multilabel_transformer(model_name: str, df, label_cols, output_dir: str):
+    # Tokenizer & model
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name, num_labels=len(label_cols), problem_type="multi_label_classification"
+    )
 
-    This is a simple example. You can replace the default dataset
-    with your own CSV/JSON or a preprocessed set of files with code smells.
+    # Prepare data
+    texts = df["Code"].tolist()
+    labels = df[label_cols].values
 
-    Args:
-        name: Name of the dataset on Hugging Face Datasets.
-        subset: Optional key for sub-dataset (e.g., "python").
+    # Split
+    texts_train, texts_val, labels_train, labels_val = train_test_split(
+        texts, labels, test_size=0.2, random_state=42
+    )
 
-    Returns:
-        A DatasetDict object with train/validation/test splits.
-    """
-    if subset is not None:
-        dataset = load_dataset(name, subset)
-    else:
-        dataset = load_dataset(name)
-    return dataset
-
-
-def tokenize_function(tokenizer: AutoTokenizer) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
-    """Returns a function for tokenizing code examples.
-
-    Args:
-        tokenizer: Initialized tokenizer.
-
-    Returns:
-        A function that takes a dictionary with a "code" field
-        and returns prepared tensors for the model.
-    """
-    def tokenize(batch: Dict[str, Any]) -> Dict[str, Any]:
+    # Tokenize
+    def tokenize_function(texts):
         return tokenizer(
-            batch["code"],
-            padding=False,
+            texts,
+            padding="max_length",
             truncation=True,
-            max_length=512,
+            max_length=512
         )
 
-    return tokenize
+    train_encodings = tokenize_function(texts_train)
+    val_encodings = tokenize_function(texts_val)
 
+    train_dataset = Dataset.from_dict({
+        "input_ids": train_encodings["input_ids"],
+        "attention_mask": train_encodings["attention_mask"],
+        "labels": np.array(labels_train, dtype=np.float32)
+    })
+    val_dataset = Dataset.from_dict({
+        "input_ids": val_encodings["input_ids"],
+        "attention_mask": val_encodings["attention_mask"],
+        "labels": np.array(labels_val, dtype=np.float32)
+    })
 
-def main() -> None:
-    model_name = "microsoft/codebert-base"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=2)
+    print(train_dataset.features)
 
-    # Load demonstration dataset. Replace with your real dataset with
-    # code and "label" field, where 1 = smell, 0 = clean.
-    dataset = load_data("code_search_net", "python")
-
-    # Use train/test split as train/validation for this example
-    # ("train", "test", and "validation" exist, but "test" may not have labels)
-    data = DatasetDict(
-        train=dataset["train"],
-        validation=dataset["validation"],
-    )
-
-    # Tokenize all code examples
-    tokenize = tokenize_function(tokenizer)
-    tokenized = data.map(tokenize, batched=True, remove_columns=data["train"].column_names)
-
-    data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
-
-    # Training parameters (adjust to your task)
+    # Training config
     training_args = TrainingArguments(
-        output_dir="models/codebert-finetuned",
-        evaluation_strategy="epoch",
-        num_train_epochs=1,
+        output_dir=output_dir,
+        num_train_epochs=3,
         per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
-        learning_rate=2e-5,
-        logging_steps=100,
-        save_total_limit=1,
+        per_device_eval_batch_size=16,
+        eval_strategy="epoch",
+        save_strategy="epoch",
         load_best_model_at_end=True,
-        metric_for_best_model="eval_loss",
+        metric_for_best_model="macro_f1",
+        greater_is_better=True,
+        save_total_limit=1,
+        logging_dir=f"{output_dir}/logs",
+        logging_strategy="epoch",
+        report_to="none"
     )
 
-    # Create the trainer
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=tokenized["train"],
-        eval_dataset=tokenized["validation"],
-        data_collator=data_collator,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        compute_metrics=compute_multilabel_metrics
     )
 
-    # Start training
     trainer.train()
 
-    # Save the model
-    trainer.save_model("models/codebert-finetuned")
-
-
-if __name__ == "__main__":
-    main()
+    # Save fine-tuned model
+    model_path = os.path.join(output_dir, f"{model_name.split('/')[-1]}_multilabel_finetuned")
+    os.makedirs(model_path, exist_ok=True)
+    model.save_pretrained(model_path)
+    tokenizer.save_pretrained(model_path)
+    print(f"✔️ Model and tokenizer saved to: {model_path}")
