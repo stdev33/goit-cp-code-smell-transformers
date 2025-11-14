@@ -10,10 +10,10 @@ def main() -> None:
     print(df[label_cols].sum())
 
     train_multilabel_transformer(
-        model_name="microsoft/codebert-base",
+        model_name="microsoft/graphcodebert-base",
         df=df,
         label_cols=["Long Method", "God/Large Class", "Feature Envy", "Data Class", "Clean"],
-        output_dir="../../models/transformers/codebert"
+        output_dir="../../models/transformers/graphcodebert"
     )
 
 
