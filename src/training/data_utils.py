@@ -18,7 +18,7 @@ def load_and_prepare_dataset(csv_path: str):
     )
 
     # Filter only SmellyCode++ records with non-empty code
-    df = df[(df["Source"] == "SmellyCode++") & (df["Code"].notnull()) &(df["Code"].str.strip() != "")]
+    df = df[(df["Source"] == "SmellyCode++") & (df["Code"].notnull()) & (df["Code"].str.strip() != "")]
 
     # Define labels to be used for multi-label classification
     label_cols = ["Long Method", "God Class", "Large Class", "Feature Envy", "Data Class", "Clean"]
